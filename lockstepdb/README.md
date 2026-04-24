@@ -1,39 +1,61 @@
 # LockstepDB
 
-LockstepDB is a transactional key-value database engine written in Go. It exposes a custom TCP/RPC interface, supports concurrent clients, uses strict two-phase locking with safe read-to-write promotion, and persists committed updates through a write-ahead log (WAL) for crash recovery.
+LockstepDB is a transactional key-value database engine written in Go. It exposes a lightweight TCP/RPC interface, supports concurrent clients, uses strict two-phase locking with safe read-to-write promotion, and persists committed updates through a write-ahead log (WAL) for crash recovery.
 
-## What This Project Does
+## Overview
 
-The original Ethos assignment code models a small transactional database with:
+This project began as an Ethos transactional RPC assignment and was redesigned into a standard Go codebase using the Go standard library. The system models the core pieces of a database transaction manager:
 
-- transaction begin and commit
-- `GET` and `PUT` operations
-- per-key read and write locks
-- lock promotion from read to write
-- buffered writes that become visible only on commit
-- deadlock avoidance through deterministic key-order locking
+- transaction lifecycle with `begin`, `commit`, and `rollback`
+- `get` and `put` operations over a shared key-value store
+- per-key read and write locking
+- read-to-write lock promotion when safe
+- private transaction write buffering until commit
+- deterministic lock ordering to avoid deadlock-prone acquisition patterns
+- durable commit logging and state recovery through WAL replay
 
-This repository converts that idea into a standard Go implementation using the standard library so it can run anywhere Go runs.
+## Features
 
-## Architecture
+- Concurrent TCP server for multiple clients
+- Transaction-local read-your-own-write semantics
+- Strict lock retention until commit or rollback
+- Safe upgrade path from shared read lock to exclusive write lock
+- WAL-backed durability for committed writes
+- Crash recovery by replaying committed log entries
+- Small concurrent demo client for behavior verification
+- Unit tests covering engine semantics and recovery
 
-- `cmd/server`: starts the TCP database server
-- `cmd/demo`: runs a concurrent client demo against the server
-- `internal/engine`: transaction manager, lock table, commit logic, recovery
-- `internal/wal`: append-only WAL with fsync-backed durability
+## Project Layout
+
+- `cmd/server`: starts the LockstepDB server
+- `cmd/demo`: runs a multi-client demo against the server
+- `internal/engine`: transaction state, lock table, commit logic, and recovery integration
+- `internal/wal`: append-only WAL implementation
 - `internal/server`: TCP listener and request dispatcher
-- `internal/protocol`: request/response message schema
+- `internal/protocol`: JSON request and response types
 
-## Guarantees
+## Concurrency Model
 
-- Uncommitted writes stay private to the transaction.
-- Reads within a transaction see their own buffered writes.
-- Locks are held until commit or rollback.
-- Only one read-to-write upgrader is allowed per key at a time to avoid upgrade deadlocks.
-- The server appends and syncs a commit record to the WAL before applying writes in memory.
-- On restart, the server rebuilds state by replaying the WAL.
+LockstepDB uses strict two-phase locking:
 
-## Run
+- Read operations acquire shared locks.
+- Write operations acquire exclusive locks.
+- Locks are held until the transaction ends.
+- Transactions may upgrade a read lock to a write lock only when they are the sole reader.
+- First-time lock acquisition follows lexicographic key order, which avoids the lock-order inversions that commonly lead to deadlocks.
+
+## Durability Model
+
+On commit, the engine:
+
+1. Appends the transaction write-set to the WAL
+2. Forces the WAL to disk with `fsync`
+3. Applies the writes to the in-memory state
+4. Releases transaction locks
+
+On restart, the server reconstructs committed state by replaying WAL records.
+
+## Quick Start
 
 Start the server:
 
@@ -41,10 +63,27 @@ Start the server:
 go run ./cmd/server
 ```
 
-In another terminal, run the demo:
+In another terminal, run the concurrent demo:
 
 ```bash
 go run ./cmd/demo
 ```
 
-The server listens on `127.0.0.1:9000` and stores its log in `./data/lockstep.wal`.
+By default, the server listens on `127.0.0.1:9000` and writes commit records to `./data/lockstep.wal`.
+
+## Testing
+
+```bash
+go test ./...
+```
+
+## Why This Project Matters
+
+LockstepDB is a focused systems project that demonstrates:
+
+- transaction processing fundamentals
+- concurrency control in Go
+- lock management and upgrade semantics
+- durability via write-ahead logging
+- crash recovery behavior
+- custom networked request handling without external frameworks
